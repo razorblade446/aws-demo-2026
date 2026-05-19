@@ -1,0 +1,204 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  solution-basic processor EC2 - t2.micro Ubuntu 24.04 running the polling processor.
+  Includes CloudWatch log group and IAM role for logs + ECR pull.
+  Imports VPC, subnet, security group, and RDS endpoint from app-shared stack.
+
+Resources:
+
+  ProcessorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /solution-basic/tasks
+      RetentionInDays: 7
+
+  ProcessorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: ProcessorPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                Resource: '*'
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource:
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/app/db/user
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/app/db/password
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt ProcessorLogGroup.Arn
+
+  ProcessorInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref ProcessorRole
+
+  ProcessorInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      ImageId: '{{resolve:ssm:/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id}}'
+      SubnetId: !ImportValue app-PublicSubnetId
+      SecurityGroupIds:
+        - !ImportValue app-ProcessorEc2SgId
+      IamInstanceProfile: !Ref ProcessorInstanceProfile
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 8
+            VolumeType: gp2
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+            set -eux
+            apt update
+            apt install -y docker.io unzip curl
+
+            curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+            unzip -q /tmp/awscliv2.zip -d /tmp
+            /tmp/aws/install
+            rm -rf /tmp/awscliv2.zip /tmp/aws
+
+            systemctl enable docker
+            systemctl start docker
+
+            DB_USER=$(aws ssm get-parameter \
+              --name /app/db/user \
+              --region ${AWS::Region} \
+              --query Parameter.Value \
+              --output text)
+
+            DB_PASSWORD=$(aws ssm get-parameter \
+              --name /app/db/password \
+              --region ${AWS::Region} \
+              --query Parameter.Value \
+              --output text)
+
+            aws ecr get-login-password --region ${AWS::Region} | \
+              docker login --username AWS --password-stdin \
+              ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com
+
+            IMAGE="${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/aws2026/solution-basic:latest"
+
+            docker pull $IMAGE
+
+            cat > /etc/processor.env <<EOF
+            DB_HOST=${DBHost}
+            DB_PORT=${DBPort}
+            DB_USER=$DB_USER
+            DB_PASSWORD=$DB_PASSWORD
+            DB_NAME=producer
+            POLL_INTERVAL_MS=5000
+            CW_LOG_GROUP=/solution-basic/tasks
+            AWS_REGION=${AWS::Region}
+            EOF
+
+            cat > /etc/systemd/system/processor.service <<EOF
+            [Unit]
+            Description=Polling processor container
+            After=docker.service network-online.target
+            Requires=docker.service
+
+            [Service]
+            Restart=always
+            ExecStartPre=-/usr/bin/docker stop processor
+            ExecStartPre=-/usr/bin/docker rm processor
+            ExecStart=/usr/bin/docker run --rm --name processor --env-file /etc/processor.env $IMAGE
+            ExecStop=/usr/bin/docker stop processor
+
+            [Install]
+            WantedBy=multi-user.target
+            EOF
+
+            systemctl daemon-reload
+            systemctl enable processor
+            systemctl start processor
+          - DBHost: !ImportValue app-RDSEndpoint
+            DBPort: !ImportValue app-RDSPort
+      Tags:
+        - Key: Name
+          Value: app-processor
+
+  # Allows EventBridge to call SSM RunCommand on EC2 instances.
+  EventBridgeSSMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SSMRunCommandPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ssm:SendCommand
+                Resource:
+                  - !Sub arn:aws:ssm:${AWS::Region}::document/AWS-RunShellScript
+                  - !Sub arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+
+  # Triggers a container redeploy whenever aws2026/solution-basic:latest is pushed to ECR.
+  ProcessorRedeployRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Pull and restart the processor container on ECR push
+      EventPattern:
+        source:
+          - aws.ecr
+        detail-type:
+          - ECR Image Action
+        detail:
+          action-type:
+            - PUSH
+          result:
+            - SUCCESS
+          repository-name:
+            - aws2026/solution-basic
+          image-tag:
+            - latest
+      Targets:
+        - Id: ProcessorSSMTarget
+          Arn: !Sub arn:aws:ssm:${AWS::Region}::document/AWS-RunShellScript
+          RoleArn: !GetAtt EventBridgeSSMRole.Arn
+          RunCommandParameters:
+            RunCommandTargets:
+              - Key: tag:Name
+                Values:
+                  - app-processor
+          Input: !Sub |
+            {
+              "commands": [
+                "aws ecr get-login-password --region ${AWS::Region} | docker login --username AWS --password-stdin ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com",
+                "docker pull ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/aws2026/solution-basic:latest",
+                "systemctl restart processor"
+              ]
+            }
+
+Outputs:
+  ProcessorInstanceId:
+    Value: !Ref ProcessorInstance
+    Description: Processor EC2 instance ID

@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "nodejs-backend": {
+      "source": "alinaqi/claude-bootstrap",
+      "sourceType": "github",
+      "skillPath": "skills/nodejs-backend/SKILL.md",
+      "computedHash": "3c993a513fcbe5fe53d3ccdc8fb1c690c0c03bbfe530020d73be829b5d5f58b4"
+    }
+  }
+}

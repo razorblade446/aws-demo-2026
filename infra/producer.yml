@@ -1,0 +1,222 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Producer EC2 - t2.micro Ubuntu 24.04 running the Next.js app.
+  Shared by solution-basic and solution-kafka demos.
+  Imports VPC, subnet, security group, and RDS endpoint from app-shared stack.
+
+Resources:
+
+  ProducerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: ProducerPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                Resource: '*'
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource:
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/app/db/user
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/app/db/password
+
+  ProducerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref ProducerRole
+
+  ProducerInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      ImageId: '{{resolve:ssm:/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id}}'
+      SubnetId: !ImportValue app-PublicSubnetId
+      SecurityGroupIds:
+        - !ImportValue app-ProducerEc2SgId
+      IamInstanceProfile: !Ref ProducerInstanceProfile
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 8
+            VolumeType: gp2
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+            set -eux
+            apt update
+            apt install -y docker.io unzip curl default-mysql-client
+
+            curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+            unzip -q /tmp/awscliv2.zip -d /tmp
+            /tmp/aws/install
+            rm -rf /tmp/awscliv2.zip /tmp/aws
+
+            systemctl enable docker
+            systemctl start docker
+
+            DB_USER=$(aws ssm get-parameter \
+              --name /app/db/user \
+              --region ${AWS::Region} \
+              --query Parameter.Value \
+              --output text)
+
+            DB_PASSWORD=$(aws ssm get-parameter \
+              --name /app/db/password \
+              --region ${AWS::Region} \
+              --query Parameter.Value \
+              --output text)
+
+            until MYSQL_PWD="$DB_PASSWORD" mysql -h ${DBHost} -P ${DBPort} -u "$DB_USER" -e "SELECT 1" &>/dev/null 2>&1; do
+              sleep 5
+            done
+
+            MYSQL_PWD="$DB_PASSWORD" mysql -h ${DBHost} -P ${DBPort} -u "$DB_USER" <<ENDSQL
+            CREATE DATABASE IF NOT EXISTS producer;
+            USE producer;
+            CREATE TABLE IF NOT EXISTS tasks (
+              id             INT UNSIGNED  NOT NULL AUTO_INCREMENT,
+              date_created   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              date_processed DATETIME      NULL,
+              metadata       JSON          NOT NULL DEFAULT ('{}'),
+              PRIMARY KEY (id),
+              INDEX idx_date_processed (date_processed)
+            );
+            ENDSQL
+
+            cat > /etc/producer.env <<EOF
+            DB_HOST=${DBHost}
+            DB_PORT=${DBPort}
+            DB_USER=$DB_USER
+            DB_PASSWORD=$DB_PASSWORD
+            DB_NAME=producer
+            EOF
+
+            IMAGE="${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/aws2026/producer:latest"
+
+            aws ecr get-login-password --region ${AWS::Region} | \
+              docker login --username AWS --password-stdin \
+              ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com
+
+            docker pull $IMAGE
+
+            cat > /etc/systemd/system/producer.service <<EOF
+            [Unit]
+            Description=Producer Next.js container
+            After=docker.service network-online.target
+            Requires=docker.service
+
+            [Service]
+            Restart=always
+            ExecStartPre=-/usr/bin/docker stop producer
+            ExecStartPre=-/usr/bin/docker rm producer
+            ExecStart=/usr/bin/docker run --rm --name producer -p 3000:3000 --env-file /etc/producer.env $IMAGE
+            ExecStop=/usr/bin/docker stop producer
+
+            [Install]
+            WantedBy=multi-user.target
+            EOF
+
+            systemctl daemon-reload
+            systemctl enable producer
+            systemctl start producer
+          - DBHost: !ImportValue app-RDSEndpoint
+            DBPort: !ImportValue app-RDSPort
+      Tags:
+        - Key: Name
+          Value: app-producer
+
+  # Allows EventBridge to call SSM RunCommand on EC2 instances.
+  EventBridgeSSMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SSMRunCommandPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ssm:SendCommand
+                Resource:
+                  - !Sub arn:aws:ssm:${AWS::Region}::document/AWS-RunShellScript
+                  - !Sub arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+
+  # Triggers a container redeploy whenever aws2026/producer:latest is pushed to ECR.
+  ProducerRedeployRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Pull and restart the producer container on ECR push
+      EventPattern:
+        source:
+          - aws.ecr
+        detail-type:
+          - ECR Image Action
+        detail:
+          action-type:
+            - PUSH
+          result:
+            - SUCCESS
+          repository-name:
+            - aws2026/producer
+          image-tag:
+            - latest
+      Targets:
+        - Id: ProducerSSMTarget
+          Arn: !Sub arn:aws:ssm:${AWS::Region}::document/AWS-RunShellScript
+          RoleArn: !GetAtt EventBridgeSSMRole.Arn
+          RunCommandParameters:
+            RunCommandTargets:
+              - Key: tag:Name
+                Values:
+                  - app-producer
+          Input: !Sub |
+            {
+              "commands": [
+                "aws ecr get-login-password --region ${AWS::Region} | docker login --username AWS --password-stdin ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com",
+                "docker pull ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/aws2026/producer:latest",
+                "systemctl restart producer"
+              ]
+            }
+
+  ProducerEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  ProducerEIPAssoc:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref ProducerInstance
+      EIP: !Ref ProducerEIP
+
+Outputs:
+  ProducerPublicIP:
+    Value: !Ref ProducerEIP
+    Description: Producer app public IP
+
+  ProducerURL:
+    Value: !Sub http://${ProducerEIP}:3000
+    Description: Producer Next.js app URL

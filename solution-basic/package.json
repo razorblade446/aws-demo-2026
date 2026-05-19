@@ -1,0 +1,19 @@
+{
+  "name": "solution-basic",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@aws-sdk/client-cloudwatch-logs": "^3.0.0",
+    "dotenv": "^17.4.2",
+    "mysql2": "^3.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "tsx": "^4.0.0",
+    "typescript": "^5"
+  }
+}
