@@ -52,12 +52,15 @@ A Node.js process that polls MySQL every 5 seconds for pending tasks, executes e
 - CFN stack: `infra/solution-basic.yml`
 - Full spec: [solution-basic/SPEC.md](solution-basic/SPEC.md)
 
-### solution-kafka _(in progress)_
+### solution-kafka
 
-Event-driven replacement. The producer publishes to per-company Kafka topics; Lambda functions are triggered per topic and run only when there is work, eliminating idle compute.
+Event-driven replacement. The producer publishes to the `document-bol` Kafka topic; five Lambda functions (one per shipping company) are triggered by that topic — filtered by shipper — and run only when there is work, eliminating idle compute.
 
-- Stack: Node.js Lambdas, Kafka (EC2 or MSK)
-- CFN stack: `infra/solution-kafka.yml` (not yet created)
+- Stack: Node.js Lambda (TypeScript), Kafka on EC2 (Docker)
+- Dockerfile: `solution-kafka/lambda/Dockerfile`
+- ECR repo: `aws2026/solution-kafka-lambda`
+- CFN stack: `infra/solution-kafka.yml`
+- Full spec: [solution-kafka/SPEC.md](solution-kafka/SPEC.md)
 
 ## Local development
 
@@ -91,9 +94,9 @@ cd solution-basic && pnpm start
 What it does:
 
 1. Deploys `infra/shared.yml` (VPC, RDS, ECR repos, SSM parameters)
-2. Builds Docker images for `producer` and `solution-basic` (`linux/amd64`)
+2. Compiles the Lambda TypeScript and builds Docker images for `producer`, `solution-basic`, and `solution-kafka-lambda` (`linux/amd64`)
 3. Pushes images to ECR
-4. Deploys `infra/producer.yml` and `infra/solution-basic.yml`
+4. Deploys `infra/producer.yml`, `infra/solution-basic.yml`, and `infra/solution-kafka.yml`
 
 Producer URL is printed at the end.
 
@@ -104,31 +107,60 @@ export REGION=$(aws configure get region)
 export ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 export ECR_BASE=$ACCOUNT.dkr.ecr.$REGION.amazonaws.com
 
+# 1. Shared infra
 aws cloudformation deploy \
   --template-file infra/shared.yml \
-  --stack-name aws2026-shared \
+  --stack-name app-shared \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides DBPassword=<password>
 
+# 2. ECR login
 aws ecr get-login-password --region $REGION | \
   docker login --username AWS --password-stdin $ECR_BASE
 
-docker buildx build --platform linux/amd64 --load \
+# 3. Build images
+docker buildx build --platform linux/amd64 --load\
   -t $ECR_BASE/aws2026/producer:latest producer/
-docker buildx build --platform linux/amd64 --load \
+
+docker buildx build --platform linux/amd64 --load\
   -t $ECR_BASE/aws2026/solution-basic:latest solution-basic/
 
+# Lambda: compile TypeScript, then build container
+pnpm --dir solution-kafka/lambda build
+docker buildx build --platform linux/amd64 --load \
+  -t $ECR_BASE/aws2026/solution-kafka-lambda:latest \
+  -f solution-kafka/lambda/Dockerfile \
+  solution-kafka/lambda/
+
+# 4. Push images
 docker push $ECR_BASE/aws2026/producer:latest
 docker push $ECR_BASE/aws2026/solution-basic:latest
+docker push $ECR_BASE/aws2026/solution-kafka-lambda:latest
 
+# 5. Upload Kafka docker-compose.yml to S3
+# (Kafka EC2 UserData fetches this file at boot to start the broker)
+export ARTIFACTS_BUCKET=$(aws cloudformation describe-stacks \
+  --stack-name app-shared \
+  --query 'Stacks[0].Outputs[?OutputKey==`ArtifactsBucketName`].OutputValue' \
+  --output text)
+
+aws s3 cp solution-kafka/kafka/docker-compose.yml \
+  s3://$ARTIFACTS_BUCKET/solution-kafka/docker-compose.yml
+
+# 6. App stacks
 aws cloudformation deploy \
   --template-file infra/producer.yml \
-  --stack-name aws2026-producer \
+  --stack-name app-producer \
   --capabilities CAPABILITY_IAM
 
 aws cloudformation deploy \
   --template-file infra/solution-basic.yml \
-  --stack-name aws2026-solution-basic \
+  --stack-name app-solution-basic \
+  --capabilities CAPABILITY_IAM
+
+aws cloudformation deploy \
+  --template-file infra/solution-kafka.yml \
+  --stack-name app-solution-kafka \
   --capabilities CAPABILITY_IAM
 ```
 
@@ -142,9 +174,12 @@ All stacks target Free Tier where possible:
 | RDS | `db.t4g.micro`, Single-AZ, 20 GB gp2 | Free Tier |
 | EC2 (producer) | `t3.micro`, Ubuntu 24.04 LTS | Free Tier |
 | EC2 (processor) | `t3.micro`, Ubuntu 24.04 LTS | Free Tier |
+| EC2 (Kafka broker) | `t3.micro`, Amazon Linux 2023, Kafka via Docker | Free Tier |
+| Lambda (×5) | 256 MB, 30 s timeout, one per shipping company | Pay-per-invocation |
 | CloudWatch | Log group `/solution-basic/tasks`, 7-day retention | Free Tier: 5 GB/month |
+| CloudWatch | Log groups `/solution-kafka/<shipper>` (×5), 7-day retention | Free Tier: 5 GB/month |
 | ECR | One repo per component, `DeletionPolicy: Retain` | Free Tier: 500 MB/month |
-| SSM | `/app/db/user`, `/app/db/password`, Standard tier | Free |
+| SSM | `/app/db/user`, `/app/db/password`, `/app/kafka/broker`, Standard tier | Free |
 
 ## Progress
 
@@ -152,5 +187,5 @@ All stacks target Free Tier where possible:
 - [x] `solution-basic` — polling processor, Dockerfile, CFN stack, CloudWatch logging
 - [x] `infra/shared.yml` — VPC, RDS, ECR repos, SSM parameters
 - [x] `deploy.sh` — unified dev/prod deploy script
-- [ ] `solution-kafka` — Lambda functions and Kafka/MSK infrastructure
-- [ ] `infra/solution-kafka.yml` — CFN template for the event-driven stack
+- [x] `solution-kafka` — Kafka EC2 broker, Lambda codebase, per-shipper log groups
+- [x] `infra/solution-kafka.yml` — Kafka EC2, IAM role, 5 Lambda functions, 5 event source mappings

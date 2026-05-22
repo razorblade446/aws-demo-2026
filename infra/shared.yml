@@ -145,12 +145,48 @@ Resources:
           ToPort: 443
           SourceSecurityGroupId: !Ref LambdaSg
 
-  # VPC Interface Endpoint — lets VPC-attached Lambda write to CloudWatch without NAT.
+  # VPC Interface Endpoints — let VPC-attached Lambda reach AWS services without NAT.
   CloudWatchLogsEndpoint:
     Type: AWS::EC2::VPCEndpoint
     Properties:
       VpcId: !Ref VPC
       ServiceName: !Sub com.amazonaws.${AWS::Region}.logs
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref PublicSubnet1
+      SecurityGroupIds:
+        - !Ref EndpointSg
+      PrivateDnsEnabled: true
+
+  LambdaEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.lambda
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref PublicSubnet1
+      SecurityGroupIds:
+        - !Ref EndpointSg
+      PrivateDnsEnabled: true
+
+  StsEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.sts
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref PublicSubnet1
+      SecurityGroupIds:
+        - !Ref EndpointSg
+      PrivateDnsEnabled: true
+
+  SsmEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ssm
       VpcEndpointType: Interface
       SubnetIds:
         - !Ref PublicSubnet1

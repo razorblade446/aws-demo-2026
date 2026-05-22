@@ -89,7 +89,7 @@ step "[1/4] Deploying shared stack (VPC, RDS, ECR repos, SSM params)"
 
 cfn_deploy \
   --template-file "$REPO_ROOT/infra/shared.yml" \
-  --stack-name aws2026-shared \
+  --stack-name app-shared \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides "DBPassword=${DB_PASSWORD}"
 
@@ -106,6 +106,14 @@ docker build --platform linux/amd64 \
   -t "${ECR_BASE}/aws2026/solution-basic:latest" \
   "$REPO_ROOT/solution-basic"
 
+# Lambda image: compile TypeScript first, then build the container
+pnpm --dir "$REPO_ROOT/solution-kafka/lambda" build
+
+docker build --platform linux/amd64 \
+  -t "${ECR_BASE}/aws2026/solution-kafka-lambda:latest" \
+  -f "$REPO_ROOT/solution-kafka/lambda/Dockerfile" \
+  "$REPO_ROOT/solution-kafka/lambda"
+
 ok "Images built."
 
 # ── step 3: push to ECR ───────────────────────────────────────────────────────
@@ -116,33 +124,51 @@ $CLI ecr get-login-password --region "$REGION" | \
 
 docker push "${ECR_BASE}/aws2026/producer:latest"
 docker push "${ECR_BASE}/aws2026/solution-basic:latest"
+docker push "${ECR_BASE}/aws2026/solution-kafka-lambda:latest"
 
 ok "Images pushed."
 
 # ── step 4: app stacks ────────────────────────────────────────────────────────
 if [[ "$ENV" == "prod" ]]; then
-  step "[4/4] Deploying producer and solution-basic EC2 stacks"
+  step "[4/4] Deploying producer, solution-basic, and solution-kafka stacks"
+
+  # Upload Kafka docker-compose.yml to S3 before deploying solution-kafka.
+  # The Kafka EC2 UserData fetches this file at boot to start the broker.
+  ARTIFACTS_BUCKET=$($CLI cloudformation describe-stacks \
+    --stack-name app-shared \
+    --query 'Stacks[0].Outputs[?OutputKey==`ArtifactsBucketName`].OutputValue' \
+    --output text)
+
+  $CLI s3 cp "$REPO_ROOT/solution-kafka/kafka/docker-compose.yml" \
+    "s3://${ARTIFACTS_BUCKET}/solution-kafka/docker-compose.yml"
+
+  ok "Kafka docker-compose.yml uploaded to s3://${ARTIFACTS_BUCKET}/solution-kafka/"
 
   cfn_deploy \
     --template-file "$REPO_ROOT/infra/producer.yml" \
-    --stack-name aws2026-producer \
+    --stack-name app-producer \
     --capabilities CAPABILITY_IAM
 
   cfn_deploy \
     --template-file "$REPO_ROOT/infra/solution-basic.yml" \
-    --stack-name aws2026-solution-basic \
+    --stack-name app-solution-basic \
+    --capabilities CAPABILITY_IAM
+
+  cfn_deploy \
+    --template-file "$REPO_ROOT/infra/solution-kafka.yml" \
+    --stack-name app-solution-kafka \
     --capabilities CAPABILITY_IAM
 
   PRODUCER_URL=$($CLI cloudformation describe-stacks \
-    --stack-name aws2026-producer \
+    --stack-name app-producer \
     --query 'Stacks[0].Outputs[?OutputKey==`ProducerURL`].OutputValue' \
     --output text)
 
-  ok "EC2 stacks deployed."
+  ok "All stacks deployed."
   banner "${GREEN}Deploy complete!${RESET}${BOLD}  Producer → ${CYAN}${PRODUCER_URL}"
 
 else
-  step "[4/4] Skipping EC2 stacks — LocalStack does not execute UserData"
+  step "[4/4] Skipping EC2/Lambda stacks — LocalStack does not execute UserData or self-managed Kafka triggers"
   warn "Run the apps locally instead:"
   echo -e "  Producer:   ${CYAN}cd producer && pnpm dev${RESET}         # http://localhost:3000"
   echo -e "  Processor:  ${CYAN}cd solution-basic && pnpm start${RESET}"

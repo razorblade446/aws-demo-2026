@@ -6,13 +6,336 @@ Description: >
 
 Resources:
 
-  # ── CloudWatch Log Group ────────────────────────────────────────────────────
+  # ── IAM Role (Lambda) ──────────────────────────────────────────────────────
 
-  KafkaTaskLogGroup:
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: LambdaShippingPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/solution-kafka/*:*'
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource:
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/app/db/user'
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/app/db/password'
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeVpcs
+                Resource: '*'
+
+  # ── CloudWatch Log Groups (one per shipper) ─────────────────────────────────
+
+  LogGroupNakatomiCo:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: /solution-kafka/tasks
+      LogGroupName: /solution-kafka/nakatomi-co
       RetentionInDays: 7
+
+  LogGroupOceanicAir:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /solution-kafka/oceanic-air
+      RetentionInDays: 7
+
+  LogGroupWonkaSweets:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /solution-kafka/wonka-sweets
+      RetentionInDays: 7
+
+  LogGroupDuffLogistics:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /solution-kafka/duff-logistics
+      RetentionInDays: 7
+
+  LogGroupAcmeShipping:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /solution-kafka/acme-shipping
+      RetentionInDays: 7
+
+  # ── Lambda Functions (shared image, one per shipper) ───────────────────────
+
+  ShippingLambdaNakatomiCo:
+    Type: AWS::Lambda::Function
+    Properties:
+      PackageType: Image
+      Code:
+        ImageUri: !Sub
+          - '${Uri}:latest'
+          - Uri: !ImportValue app-SolutionKafkaLambdaECRUri
+      MemorySize: 256
+      Timeout: 30
+      Role: !GetAtt LambdaRole.Arn
+      VpcConfig:
+        SubnetIds:
+          - !ImportValue app-PublicSubnetId
+        SecurityGroupIds:
+          - !ImportValue app-LambdaSgId
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Ref LogGroupNakatomiCo
+      Environment:
+        Variables:
+          DB_HOST: !ImportValue app-RDSEndpoint
+          DB_PORT: '3306'
+          DB_NAME: producer
+          DB_USER_PARAM: !ImportValue app-DBUserParamName
+          DB_PASSWORD_PARAM: !ImportValue app-DBPasswordParamName
+
+  ShippingLambdaOceanicAir:
+    Type: AWS::Lambda::Function
+    Properties:
+      PackageType: Image
+      Code:
+        ImageUri: !Sub
+          - '${Uri}:latest'
+          - Uri: !ImportValue app-SolutionKafkaLambdaECRUri
+      MemorySize: 256
+      Timeout: 30
+      Role: !GetAtt LambdaRole.Arn
+      VpcConfig:
+        SubnetIds:
+          - !ImportValue app-PublicSubnetId
+        SecurityGroupIds:
+          - !ImportValue app-LambdaSgId
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Ref LogGroupOceanicAir
+      Environment:
+        Variables:
+          DB_HOST: !ImportValue app-RDSEndpoint
+          DB_PORT: '3306'
+          DB_NAME: producer
+          DB_USER_PARAM: !ImportValue app-DBUserParamName
+          DB_PASSWORD_PARAM: !ImportValue app-DBPasswordParamName
+
+  ShippingLambdaWonkaSweets:
+    Type: AWS::Lambda::Function
+    Properties:
+      PackageType: Image
+      Code:
+        ImageUri: !Sub
+          - '${Uri}:latest'
+          - Uri: !ImportValue app-SolutionKafkaLambdaECRUri
+      MemorySize: 256
+      Timeout: 30
+      Role: !GetAtt LambdaRole.Arn
+      VpcConfig:
+        SubnetIds:
+          - !ImportValue app-PublicSubnetId
+        SecurityGroupIds:
+          - !ImportValue app-LambdaSgId
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Ref LogGroupWonkaSweets
+      Environment:
+        Variables:
+          DB_HOST: !ImportValue app-RDSEndpoint
+          DB_PORT: '3306'
+          DB_NAME: producer
+          DB_USER_PARAM: !ImportValue app-DBUserParamName
+          DB_PASSWORD_PARAM: !ImportValue app-DBPasswordParamName
+
+  ShippingLambdaDuffLogistics:
+    Type: AWS::Lambda::Function
+    Properties:
+      PackageType: Image
+      Code:
+        ImageUri: !Sub
+          - '${Uri}:latest'
+          - Uri: !ImportValue app-SolutionKafkaLambdaECRUri
+      MemorySize: 256
+      Timeout: 30
+      Role: !GetAtt LambdaRole.Arn
+      VpcConfig:
+        SubnetIds:
+          - !ImportValue app-PublicSubnetId
+        SecurityGroupIds:
+          - !ImportValue app-LambdaSgId
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Ref LogGroupDuffLogistics
+      Environment:
+        Variables:
+          DB_HOST: !ImportValue app-RDSEndpoint
+          DB_PORT: '3306'
+          DB_NAME: producer
+          DB_USER_PARAM: !ImportValue app-DBUserParamName
+          DB_PASSWORD_PARAM: !ImportValue app-DBPasswordParamName
+
+  ShippingLambdaAcmeShipping:
+    Type: AWS::Lambda::Function
+    Properties:
+      PackageType: Image
+      Code:
+        ImageUri: !Sub
+          - '${Uri}:latest'
+          - Uri: !ImportValue app-SolutionKafkaLambdaECRUri
+      MemorySize: 256
+      Timeout: 30
+      Role: !GetAtt LambdaRole.Arn
+      VpcConfig:
+        SubnetIds:
+          - !ImportValue app-PublicSubnetId
+        SecurityGroupIds:
+          - !ImportValue app-LambdaSgId
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Ref LogGroupAcmeShipping
+      Environment:
+        Variables:
+          DB_HOST: !ImportValue app-RDSEndpoint
+          DB_PORT: '3306'
+          DB_NAME: producer
+          DB_USER_PARAM: !ImportValue app-DBUserParamName
+          DB_PASSWORD_PARAM: !ImportValue app-DBPasswordParamName
+
+  # ── Event Source Mappings (documents-bol topic, filtered per shipper) ────────
+
+  EventSourceNakatomiCo:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      FunctionName: !Ref ShippingLambdaNakatomiCo
+      SelfManagedEventSource:
+        Endpoints:
+          KafkaBootstrapServers:
+            - !Sub '${KafkaInstance.PrivateIp}:9092'
+      SourceAccessConfigurations:
+        - Type: VPC_SUBNET
+          URI: !Sub
+            - 'subnet:${SubnetId}'
+            - SubnetId: !ImportValue app-PublicSubnetId
+        - Type: VPC_SECURITY_GROUP
+          URI: !Sub
+            - 'security_group:${SgId}'
+            - SgId: !ImportValue app-LambdaSgId
+      StartingPosition: LATEST
+      BatchSize: 50
+      Topics:
+        - documents-bol
+      FilterCriteria:
+        Filters:
+          - Pattern: '{"value":{"shipper":["nakatomi-co"]}}'
+
+  EventSourceOceanicAir:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      FunctionName: !Ref ShippingLambdaOceanicAir
+      SelfManagedEventSource:
+        Endpoints:
+          KafkaBootstrapServers:
+            - !Sub '${KafkaInstance.PrivateIp}:9092'
+      SourceAccessConfigurations:
+        - Type: VPC_SUBNET
+          URI: !Sub
+            - 'subnet:${SubnetId}'
+            - SubnetId: !ImportValue app-PublicSubnetId
+        - Type: VPC_SECURITY_GROUP
+          URI: !Sub
+            - 'security_group:${SgId}'
+            - SgId: !ImportValue app-LambdaSgId
+      StartingPosition: LATEST
+      BatchSize: 50
+      Topics:
+        - documents-bol
+      FilterCriteria:
+        Filters:
+          - Pattern: '{"value":{"shipper":["oceanic-air"]}}'
+
+  EventSourceWonkaSweets:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      FunctionName: !Ref ShippingLambdaWonkaSweets
+      SelfManagedEventSource:
+        Endpoints:
+          KafkaBootstrapServers:
+            - !Sub '${KafkaInstance.PrivateIp}:9092'
+      SourceAccessConfigurations:
+        - Type: VPC_SUBNET
+          URI: !Sub
+            - 'subnet:${SubnetId}'
+            - SubnetId: !ImportValue app-PublicSubnetId
+        - Type: VPC_SECURITY_GROUP
+          URI: !Sub
+            - 'security_group:${SgId}'
+            - SgId: !ImportValue app-LambdaSgId
+      StartingPosition: LATEST
+      BatchSize: 50
+      Topics:
+        - documents-bol
+      FilterCriteria:
+        Filters:
+          - Pattern: '{"value":{"shipper":["wonka-sweets"]}}'
+
+  EventSourceDuffLogistics:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      FunctionName: !Ref ShippingLambdaDuffLogistics
+      SelfManagedEventSource:
+        Endpoints:
+          KafkaBootstrapServers:
+            - !Sub '${KafkaInstance.PrivateIp}:9092'
+      SourceAccessConfigurations:
+        - Type: VPC_SUBNET
+          URI: !Sub
+            - 'subnet:${SubnetId}'
+            - SubnetId: !ImportValue app-PublicSubnetId
+        - Type: VPC_SECURITY_GROUP
+          URI: !Sub
+            - 'security_group:${SgId}'
+            - SgId: !ImportValue app-LambdaSgId
+      StartingPosition: LATEST
+      BatchSize: 50
+      Topics:
+        - documents-bol
+      FilterCriteria:
+        Filters:
+          - Pattern: '{"value":{"shipper":["duff-logistics"]}}'
+
+  EventSourceAcmeShipping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      FunctionName: !Ref ShippingLambdaAcmeShipping
+      SelfManagedEventSource:
+        Endpoints:
+          KafkaBootstrapServers:
+            - !Sub '${KafkaInstance.PrivateIp}:9092'
+      SourceAccessConfigurations:
+        - Type: VPC_SUBNET
+          URI: !Sub
+            - 'subnet:${SubnetId}'
+            - SubnetId: !ImportValue app-PublicSubnetId
+        - Type: VPC_SECURITY_GROUP
+          URI: !Sub
+            - 'security_group:${SgId}'
+            - SgId: !ImportValue app-LambdaSgId
+      StartingPosition: LATEST
+      BatchSize: 50
+      Topics:
+        - documents-bol
+      FilterCriteria:
+        Filters:
+          - Pattern: '{"value":{"shipper":["acme-shipping"]}}'
 
   # ── Security Group ──────────────────────────────────────────────────────────
 
@@ -120,7 +443,7 @@ Resources:
 
             printf 'PRIVATE_IP=%s\n' "${!PRIVATE_IP}" > /opt/kafka/.env
 
-            cd /opt/kafka && docker-compose up -d kafka
+            cd /opt/kafka && docker-compose up -d kafka kafka-init
 
             echo "Kafka started" >> /var/log/producer.log
 
@@ -145,6 +468,110 @@ Resources:
       Name: /app/kafka/broker
       Type: String
       Value: !Sub '${KafkaInstance.PrivateIp}:9092'
+
+  # ── ESM Updater (re-creates ESMs when /app/kafka/broker changes) ────────────
+
+  EsmUpdaterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: EsmUpdaterPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:ListEventSourceMappings
+                  - lambda:GetEventSourceMapping
+                  - lambda:DeleteEventSourceMapping
+                  - lambda:CreateEventSourceMapping
+                Resource: '*'
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/app/kafka/broker'
+
+  EsmUpdaterFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt EsmUpdaterRole.Arn
+      Timeout: 300
+      Environment:
+        Variables:
+          FUNC_NAKATOMI: !GetAtt ShippingLambdaNakatomiCo.Arn
+          FUNC_OCEANIC:  !GetAtt ShippingLambdaOceanicAir.Arn
+          FUNC_WONKA:    !GetAtt ShippingLambdaWonkaSweets.Arn
+          FUNC_DUFF:     !GetAtt ShippingLambdaDuffLogistics.Arn
+          FUNC_ACME:     !GetAtt ShippingLambdaAcmeShipping.Arn
+          SUBNET_ID:     !ImportValue app-PublicSubnetId
+          SG_ID:         !ImportValue app-LambdaSgId
+          TOPIC:         documents-bol
+      Code:
+        ZipFile: |
+          import boto3, os, time
+
+          lm  = boto3.client('lambda')
+          ssm = boto3.client('ssm')
+
+          FUNCS = [
+              (os.environ['FUNC_NAKATOMI'], '{"value":{"shipper":["nakatomi-co"]}}'),
+              (os.environ['FUNC_OCEANIC'],  '{"value":{"shipper":["oceanic-air"]}}'),
+              (os.environ['FUNC_WONKA'],    '{"value":{"shipper":["wonka-sweets"]}}'),
+              (os.environ['FUNC_DUFF'],     '{"value":{"shipper":["duff-logistics"]}}'),
+              (os.environ['FUNC_ACME'],     '{"value":{"shipper":["acme-shipping"]}}'),
+          ]
+
+          def handler(event, context):
+              broker = ssm.get_parameter(Name='/app/kafka/broker')['Parameter']['Value']
+              subnet = os.environ['SUBNET_ID']
+              sg     = os.environ['SG_ID']
+              topic  = os.environ['TOPIC']
+
+              uuids = []
+              for arn, _ in FUNCS:
+                  for esm in lm.list_event_source_mappings(FunctionName=arn)['EventSourceMappings']:
+                      lm.delete_event_source_mapping(UUID=esm['UUID'])
+                      uuids.append(esm['UUID'])
+
+              for uuid in uuids:
+                  for _ in range(20):
+                      try:
+                          lm.get_event_source_mapping(UUID=uuid)
+                          time.sleep(3)
+                      except lm.exceptions.ResourceNotFoundException:
+                          break
+
+              for arn, pattern in FUNCS:
+                  lm.create_event_source_mapping(
+                      FunctionName=arn,
+                      SelfManagedEventSource={'Endpoints': {'KAFKA_BOOTSTRAP_SERVERS': [broker]}},
+                      SourceAccessConfigurations=[
+                          {'Type': 'VPC_SUBNET',         'URI': 'subnet:'         + subnet},
+                          {'Type': 'VPC_SECURITY_GROUP', 'URI': 'security_group:' + sg},
+                      ],
+                      StartingPosition='LATEST',
+                      BatchSize=50,
+                      Topics=[topic],
+                      FilterCriteria={'Filters': [{'Pattern': pattern}]},
+                  )
+
+  EsmUpdaterInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt EsmUpdaterFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt KafkaBrokerChangeRule.Arn
 
   # ── EventBridge: SSM param change → producer restart ───────────────────────
 
@@ -200,6 +627,8 @@ Resources:
                 "systemctl restart producer"
               ]
             }
+        - Id: EsmUpdaterTarget
+          Arn: !GetAtt EsmUpdaterFunction.Arn
 
 Outputs:
 
