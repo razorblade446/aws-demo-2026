@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  Producer EC2 - t2.micro Ubuntu 24.04 running the Next.js app.
+  Producer EC2 - t3.micro Amazon Linux 2023 running the Next.js app.
   Shared by solution-basic and solution-kafka demos.
   Imports VPC, subnet, security group, and RDS endpoint from app-shared stack.
 
@@ -34,6 +34,7 @@ Resources:
                 Resource:
                   - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/app/db/user
                   - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/app/db/password
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/app/kafka/broker
 
   ProducerInstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -45,13 +46,13 @@ Resources:
     Type: AWS::EC2::Instance
     Properties:
       InstanceType: t3.micro
-      ImageId: '{{resolve:ssm:/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id}}'
+      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
       SubnetId: !ImportValue app-PublicSubnetId
       SecurityGroupIds:
         - !ImportValue app-ProducerEc2SgId
       IamInstanceProfile: !Ref ProducerInstanceProfile
       BlockDeviceMappings:
-        - DeviceName: /dev/sda1
+        - DeviceName: /dev/xvda
           Ebs:
             VolumeSize: 8
             VolumeType: gp2
@@ -60,13 +61,7 @@ Resources:
           - |
             #!/bin/bash
             set -eux
-            apt update
-            apt install -y docker.io unzip curl default-mysql-client
-
-            curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
-            unzip -q /tmp/awscliv2.zip -d /tmp
-            /tmp/aws/install
-            rm -rf /tmp/awscliv2.zip /tmp/aws
+            dnf install -y docker unzip mariadb105
 
             systemctl enable docker
             systemctl start docker
@@ -87,18 +82,11 @@ Resources:
               sleep 5
             done
 
-            MYSQL_PWD="$DB_PASSWORD" mysql -h ${DBHost} -P ${DBPort} -u "$DB_USER" <<ENDSQL
-            CREATE DATABASE IF NOT EXISTS producer;
-            USE producer;
-            CREATE TABLE IF NOT EXISTS tasks (
-              id             INT UNSIGNED  NOT NULL AUTO_INCREMENT,
-              date_created   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              date_processed DATETIME      NULL,
-              metadata       JSON          NOT NULL DEFAULT ('{}'),
-              PRIMARY KEY (id),
-              INDEX idx_date_processed (date_processed)
-            );
-            ENDSQL
+            KAFKA_BROKER=$(aws ssm get-parameter \
+              --name /app/kafka/broker \
+              --region ${AWS::Region} \
+              --query Parameter.Value \
+              --output text 2>/dev/null || echo "")
 
             cat > /etc/producer.env <<EOF
             DB_HOST=${DBHost}
@@ -106,6 +94,7 @@ Resources:
             DB_USER=$DB_USER
             DB_PASSWORD=$DB_PASSWORD
             DB_NAME=producer
+            KAFKA_BROKER=$KAFKA_BROKER
             EOF
 
             IMAGE="${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/aws2026/producer:latest"

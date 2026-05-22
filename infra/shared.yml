@@ -112,6 +112,42 @@ Resources:
           FromPort: 3306
           ToPort: 3306
           SourceSecurityGroupId: !Ref ProcessorEc2Sg
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref LambdaSg
+
+  # Lambda functions SG — no inbound; outbound to RDS and Kafka within VPC.
+  LambdaSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Lambda functions - outbound to RDS and Kafka only
+      VpcId: !Ref VPC
+
+  # VPC endpoint ENI — inbound HTTPS from LambdaSg so Lambda can reach CloudWatch Logs.
+  EndpointSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: VPC endpoint ENI - HTTPS from Lambda
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref LambdaSg
+
+  # VPC Interface Endpoint — lets VPC-attached Lambda write to CloudWatch without NAT.
+  CloudWatchLogsEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.logs
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref PublicSubnet1
+      SecurityGroupIds:
+        - !Ref EndpointSg
+      PrivateDnsEnabled: true
 
   # ── SSM Parameters (String, not SecureString - CFN limitation) ─────────────
 
@@ -164,6 +200,36 @@ Resources:
               "action": { "type": "expire" }
             }]
           }
+
+  SolutionKafkaLambdaRepo:
+    Type: AWS::ECR::Repository
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      RepositoryName: aws2026/solution-kafka-lambda
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [{
+              "rulePriority": 1,
+              "description": "Keep last 5 images",
+              "selection": { "tagStatus": "any", "countType": "imageCountMoreThan", "countNumber": 5 },
+              "action": { "type": "expire" }
+            }]
+          }
+
+  # ── S3 Artifacts Bucket ─────────────────────────────────────────────────────
+
+  ArtifactsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
 
   # ── RDS MySQL ───────────────────────────────────────────────────────────────
 
@@ -256,3 +322,18 @@ Outputs:
     Value: !Ref DBPasswordParam
     Export:
       Name: app-DBPasswordParamName
+
+  LambdaSgId:
+    Value: !Ref LambdaSg
+    Export:
+      Name: app-LambdaSgId
+
+  SolutionKafkaLambdaECRUri:
+    Value: !GetAtt SolutionKafkaLambdaRepo.RepositoryUri
+    Export:
+      Name: app-SolutionKafkaLambdaECRUri
+
+  ArtifactsBucketName:
+    Value: !Ref ArtifactsBucket
+    Export:
+      Name: app-ArtifactsBucketName

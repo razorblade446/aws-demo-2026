@@ -1,0 +1,208 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  solution-kafka - Kafka EC2 broker, three Lambda functions (one per shipping company
+  topic), event source mappings, CloudWatch log group, SSM parameter, and EventBridge
+  rule that restarts the producer whenever the broker address changes.
+
+Resources:
+
+  # ── CloudWatch Log Group ────────────────────────────────────────────────────
+
+  KafkaTaskLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /solution-kafka/tasks
+      RetentionInDays: 7
+
+  # ── Security Group ──────────────────────────────────────────────────────────
+
+  KafkaSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Kafka EC2 - port 9092 from Lambda and Producer
+      VpcId: !ImportValue app-VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 9092
+          ToPort: 9092
+          SourceSecurityGroupId: !ImportValue app-LambdaSgId
+        - IpProtocol: tcp
+          FromPort: 9092
+          ToPort: 9092
+          SourceSecurityGroupId: !ImportValue app-ProducerEc2SgId
+
+  # ── Kafka EC2 ───────────────────────────────────────────────────────────────
+
+  KafkaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: KafkaPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub
+                  - 'arn:aws:s3:::${Bucket}/solution-kafka/*'
+                  - Bucket: !ImportValue app-ArtifactsBucketName
+              - Effect: Allow
+                Action: ssm:PutParameter
+                Resource: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/app/kafka/broker
+
+  KafkaInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref KafkaRole
+
+  KafkaInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      IamInstanceProfile: !Ref KafkaInstanceProfile
+      NetworkInterfaces:
+        - DeviceIndex: '0'
+          SubnetId: !ImportValue app-PublicSubnetId
+          GroupSet:
+            - !Ref KafkaSg
+          AssociatePublicIpAddress: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 8
+            VolumeType: gp3
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+            set -eux
+            dnf install -y docker unzip
+
+            touch /var/log/producer.log
+
+            echo "Installs complete" >> /var/log/producer.log
+
+            # Docker Compose v2 standalone binary
+            curl -SL "https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64" \
+              -o /usr/local/bin/docker-compose
+            chmod +x /usr/local/bin/docker-compose
+
+            echo "Docker Compose installed" >> /var/log/producer.log
+
+            systemctl enable docker
+            systemctl start docker
+
+            TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+            PRIVATE_IP=$(curl -H "X-aws-ec2-metadata-token: ${!TOKEN}" http://169.254.169.254/latest/meta-data/local-ipv4)
+
+            echo "Private IP: ${!PRIVATE_IP}" >> /var/log/producer.log
+
+            mkdir -p /opt/kafka
+            aws s3 cp s3://${ArtifactsBucket}/solution-kafka/docker-compose.yml /opt/kafka/docker-compose.yml
+
+            echo "Docker Compose file downloaded" >> /var/log/producer.log
+
+            printf 'PRIVATE_IP=%s\n' "${!PRIVATE_IP}" > /opt/kafka/.env
+
+            cd /opt/kafka && docker-compose up -d kafka
+
+            echo "Kafka started" >> /var/log/producer.log
+
+            aws ssm put-parameter \
+              --name /app/kafka/broker \
+              --value "${!PRIVATE_IP}:9092" \
+              --type String \
+              --overwrite \
+              --region ${AWS::Region}
+
+            echo "Kafka broker address stored in SSM" >> /var/log/producer.log
+          - ArtifactsBucket: !ImportValue app-ArtifactsBucketName
+      Tags:
+        - Key: Name
+          Value: app-kafka
+
+  # ── SSM Parameter ───────────────────────────────────────────────────────────
+
+  KafkaBrokerParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /app/kafka/broker
+      Type: String
+      Value: !Sub '${KafkaInstance.PrivateIp}:9092'
+
+  # ── EventBridge: SSM param change → producer restart ───────────────────────
+
+  KafkaBrokerEventBridgeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SSMRunCommandPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ssm:SendCommand
+                Resource:
+                  - !Sub arn:aws:ssm:${AWS::Region}::document/AWS-RunShellScript
+                  - !Sub arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+
+  KafkaBrokerChangeRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Restart producer when Kafka broker address changes in SSM
+      EventPattern:
+        source:
+          - aws.ssm
+        detail-type:
+          - Parameter Store Change
+        detail:
+          name:
+            - /app/kafka/broker
+          operation:
+            - Update
+      Targets:
+        - Id: ProducerSSMTarget
+          Arn: !Sub arn:aws:ssm:${AWS::Region}::document/AWS-RunShellScript
+          RoleArn: !GetAtt KafkaBrokerEventBridgeRole.Arn
+          RunCommandParameters:
+            RunCommandTargets:
+              - Key: tag:Name
+                Values:
+                  - app-producer
+          Input: !Sub |
+            {
+              "commands": [
+                "KAFKA_BROKER=$(aws ssm get-parameter --name /app/kafka/broker --query Parameter.Value --output text --region ${AWS::Region})",
+                "sed -i \"s|^KAFKA_BROKER=.*|KAFKA_BROKER=${!KAFKA_BROKER}|\" /etc/producer.env",
+                "systemctl restart producer"
+              ]
+            }
+
+Outputs:
+
+  KafkaPrivateIp:
+    Value: !GetAtt KafkaInstance.PrivateIp
+    Export:
+      Name: app-KafkaPrivateIp
+
+  KafkaInstanceId:
+    Value: !Ref KafkaInstance
+    Description: Kafka EC2 instance ID

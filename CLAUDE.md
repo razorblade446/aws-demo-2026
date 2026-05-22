@@ -148,11 +148,11 @@ Each merchant API publishes to a per-company Kafka topic. Lambda functions are t
 
 ## Development Approach
 
-Before writing or changing code, do a focused review of the existing code and describe how it works inside `<CODE_REVIEW>` tags. Then produce a concrete plan inside `<PLANNING>` tags before making changes. Suggest a small, verifiable step after each discrete change.
+Before writing or changing code, do a focused review of the existing code and describe how it works. Then produce a concrete plan before making changes. Suggest a small, verifiable step after each discrete change.
 
 When there are choices to make (library, pattern, trade-off), surface them explicitly rather than picking silently. Ask for clarification if anything is unclear or ambiguous before proceeding.
 
-For anything touching input handling, authentication, or external data: perform an additional security review and show reasoning inside `<SECURITY_REVIEW>` tags.
+For anything touching input handling, authentication, or external data: perform an additional security review and show reasoning.
 
 Consider operational concerns at every step — how the service is hosted, monitored, and maintained — and flag them where relevant.
 

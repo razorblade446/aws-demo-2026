@@ -61,9 +61,23 @@ flowchart LR
 
 
 ```
+## Producer (update)
+
+- Producer should handle now 2 different task lists, the existing one to be processed by "Processor", and a new one that should be processed by "Kafka".
+- Kafka-processed tasks should have their own form to create those.
+- Producer app should use a tab to switch between either list.
+- Kafka-processed task should also inform in real time when they are marked as processed.
+- "Shipping Company" should be a select, with the options "envia", "inter" and "cordi".
+- Once a kafka-processed task is created in DB, it should be sent to the topic with the same value as "Shipping Company"
+
+## Kafka
+
+- Single instance
+- Dockerized
+- Running on EC2 instance t3.micro
+
 ## Lambdas
 
-- Lambdas are written as simple nodejs scripts, that take the content of the notification messages.
-- Must launch 4 different lambda functions, for the purpose of event sources, there should be 4 different topics for triggering the corresponding lambda.
+- Lambda responsibility is to send a message to Cloudwatch with the payload received from Kafka
 - All the lambda functions share the same codebase.
-- Lambda functions objective is just log the message contents along with the topic name to Cloudwatch
+- Lambdas should trigger on topics, topics available are 'envia', 'inter', 'cordi'.
