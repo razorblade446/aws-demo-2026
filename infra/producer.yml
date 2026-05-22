@@ -116,7 +116,7 @@ Resources:
             Restart=always
             ExecStartPre=-/usr/bin/docker stop producer
             ExecStartPre=-/usr/bin/docker rm producer
-            ExecStart=/usr/bin/docker run --rm --name producer -p 3000:3000 --env-file /etc/producer.env $IMAGE
+            ExecStart=/usr/bin/docker run --rm --name producer -p 80:3000 --env-file /etc/producer.env $IMAGE
             ExecStop=/usr/bin/docker stop producer
 
             [Install]
@@ -208,5 +208,5 @@ Outputs:
     Description: Producer app public IP
 
   ProducerURL:
-    Value: !Sub http://${ProducerEIP}:3000
+    Value: !Sub http://${ProducerEIP}
     Description: Producer Next.js app URL

@@ -22,6 +22,7 @@ The producer web app gains a second tab (**Kafka Tasks**) with its own form, tab
 | Event trigger | `AWS::Lambda::EventSourceMapping` (self-managed Kafka) | Native service integration; no polling code required |
 | Kafka private IP | Dynamic — assigned by AWS; published to SSM `/app/kafka/broker` on every boot | EventBridge propagates any IP change to the producer automatically |
 | Kafka access | SSH via `app-producer` bastion (key pair `app-key-pair`) — no EIP on Kafka | Producer has public IP + port 22 open; Kafka SG only allows SSH from ProducerEc2Sg |
+| Producer port | Host port 80 mapped to container port 3000 (`-p 80:3000`) | Accessible via standard HTTP; Next.js stays on 3000 inside the container. Point your DNS A record at `ProducerEIP` manually after deploy |
 | SSH key pair | Single `AWS::EC2::KeyPair` (`app-key-pair`) created in `app-shared`; private key stored in SSM at `/ec2/keypair/{KeyPairId}` | One key pair for both instances; retrieved once at deploy time |
 | `KAFKA_BROKER` distribution | SSM Parameter `/app/kafka/broker`; EventBridge watches for changes and restarts producer | Decouples producer from CFN stack dependency; auto-heals after Kafka restarts |
 | Topics | `document-bol` | Single topic for all shipping tasks; created by `kafka-init` on boot |
@@ -49,7 +50,7 @@ infra/
 ├── shared.yml          # VPC, RDS, SGs, SSM params, ECR repos, S3 buckets
 │                         MODIFIED: + LambdaSg, + CloudWatchLogsEndpoint, + SolutionKafkaLambdaRepo, + ArtifactsBucket
 ├── producer.yml        # EC2 t3.micro for Next.js
-│                         MODIFIED: + KAFKA_BROKER env var in UserData
+│                         MODIFIED: + KAFKA_BROKER env var in UserData, port 80 (host) → 3000 (container)
 ├── solution-basic.yml  # EC2 t3.micro for polling processor (unchanged)
 └── solution-kafka.yml  # NEW: Kafka EC2, 3 Lambda functions, event source mappings, CW log group
 ```
@@ -71,6 +72,7 @@ infra/
 ### Modified Resources
 
 - **`RdsSg`**: add inbound rule — TCP 3306 from `LambdaSg`. Lambda must update `kafka_tasks.date_processed` in RDS.
+- **`ProducerEc2Sg`**: inbound rule changed from TCP 3000 to TCP 80.
 
 ### New Stack Outputs
 
