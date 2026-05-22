@@ -81,15 +81,24 @@ Resources:
 
   # ── Security Groups ─────────────────────────────────────────────────────────
 
+  AppKeyPair:
+    Type: AWS::EC2::KeyPair
+    Properties:
+      KeyName: app-key-pair
+
   ProducerEc2Sg:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Producer EC2 - port 3000 inbound from internet
+      GroupDescription: Producer EC2 - port 3000 inbound from internet; port 22 bastion SSH
       VpcId: !Ref VPC
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 3000
           ToPort: 3000
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
           CidrIp: 0.0.0.0/0
 
   ProcessorEc2Sg:
@@ -337,3 +346,14 @@ Outputs:
     Value: !Ref ArtifactsBucket
     Export:
       Name: app-ArtifactsBucketName
+
+  KeyPairName:
+    Value: !Ref AppKeyPair
+    Export:
+      Name: app-KeyPairName
+
+  KeyPairId:
+    Value: !GetAtt AppKeyPair.KeyPairId
+    Description: Use with SSM to retrieve the private key - /ec2/keypair/{KeyPairId}
+    Export:
+      Name: app-KeyPairId

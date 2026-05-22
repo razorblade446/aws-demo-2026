@@ -47,6 +47,7 @@ Resources:
     Properties:
       InstanceType: t3.micro
       ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      KeyName: !ImportValue app-KeyPairName
       SubnetId: !ImportValue app-PublicSubnetId
       SecurityGroupIds:
         - !ImportValue app-ProducerEc2SgId

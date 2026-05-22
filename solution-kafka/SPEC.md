@@ -21,7 +21,8 @@ The producer web app gains a second tab (**Kafka Tasks**) with its own form, tab
 | Lambda → RDS | Same VPC + `LambdaSg` allowed in `RdsSg` | Private path to RDS; no public DB access from Lambda |
 | Event trigger | `AWS::Lambda::EventSourceMapping` (self-managed Kafka) | Native service integration; no polling code required |
 | Kafka private IP | Dynamic — assigned by AWS; published to SSM `/app/kafka/broker` on every boot | EventBridge propagates any IP change to the producer automatically |
-| Kafka access | SSM Session Manager only — no EIP, no SSH | Free Tier; EIP costs money at rest |
+| Kafka access | SSH via `app-producer` bastion (key pair `app-key-pair`) — no EIP on Kafka | Producer has public IP + port 22 open; Kafka SG only allows SSH from ProducerEc2Sg |
+| SSH key pair | Single `AWS::EC2::KeyPair` (`app-key-pair`) created in `app-shared`; private key stored in SSM at `/ec2/keypair/{KeyPairId}` | One key pair for both instances; retrieved once at deploy time |
 | `KAFKA_BROKER` distribution | SSM Parameter `/app/kafka/broker`; EventBridge watches for changes and restarts producer | Decouples producer from CFN stack dependency; auto-heals after Kafka restarts |
 | Topics | `document-bol` | Single topic for all shipping tasks; created by `kafka-init` on boot |
 | Lambda functions | 1 Function, triggers on `document-bol` topic, batches up to 100 messages | All tasks routed through one topic; Lambda logs payload and marks task processed |
@@ -87,7 +88,7 @@ infra/
 
 | Logical ID | Rules |
 |------------|-------|
-| `KafkaSg` | Inbound TCP 9092 from `LambdaSg` (event source polling) and from `ProducerEc2Sg` (producer publishes) |
+| `KafkaSg` | Inbound TCP 9092 from `LambdaSg` (event source polling) and from `ProducerEc2Sg` (producer publishes); inbound TCP 22 from `ProducerEc2Sg` (bastion SSH) |
 
 ### Kafka EC2
 
@@ -99,7 +100,8 @@ infra/
 | Security group | `KafkaSg` |
 | Private IP | Dynamic (AWS-assigned); resolved at deploy time via `!GetAtt KafkaInstance.PrivateIp` |
 | EBS | 8 GB gp3 |
-| Elastic IP | None — access via SSM Session Manager |
+| Elastic IP | None — SSH access via `app-producer` bastion using key pair `app-key-pair` |
+| Key pair | `!ImportValue app-KeyPairName` (created in `app-shared`) |
 | IAM | `AmazonSSMManagedInstanceCore` + `s3:GetObject` on `solution-kafka/*` in `ArtifactsBucket` + `ssm:PutParameter` on `/app/kafka/broker` |
 
 **UserData** installs Docker and the Compose binary, downloads `docker-compose.yml` from S3, writes `PRIVATE_IP` to `.env`, starts the broker and init services, then writes to SSM:
@@ -582,5 +584,5 @@ docker push $ECR_BASE/aws2026/producer:latest
 | Bulk generation | `POST /api/kafka-tasks/generate` with `{ count }` — bulk INSERT + background publish |
 | Lambda updates RDS | Yes — Lambda sets `date_processed` for real-time SSE feedback |
 | KAFKA_BROKER distribution | SSM Parameter Store `/app/kafka/broker`; no CFN cross-stack dependency |
-| Kafka EC2 management access | SSM Session Manager only — no EIP |
+| Kafka EC2 management access | SSH via `app-producer` bastion; `KafkaSg` port 22 allows only `ProducerEc2Sg` |
 | Custom Docker image vs Compose for broker | Docker Compose with `apache/kafka:3.9.2` directly — no image build/push pipeline; only the compose file is a deploy artifact, stored in S3 |

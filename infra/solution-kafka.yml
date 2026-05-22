@@ -19,7 +19,7 @@ Resources:
   KafkaSg:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Kafka EC2 - port 9092 from Lambda and Producer
+      GroupDescription: Kafka EC2 - port 9092 from Lambda and Producer; port 22 SSH from Producer bastion
       VpcId: !ImportValue app-VpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -29,6 +29,10 @@ Resources:
         - IpProtocol: tcp
           FromPort: 9092
           ToPort: 9092
+          SourceSecurityGroupId: !ImportValue app-ProducerEc2SgId
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
           SourceSecurityGroupId: !ImportValue app-ProducerEc2SgId
 
   # ── Kafka EC2 ───────────────────────────────────────────────────────────────
@@ -70,6 +74,7 @@ Resources:
     Properties:
       InstanceType: t3.micro
       ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      KeyName: !ImportValue app-KeyPairName
       IamInstanceProfile: !Ref KafkaInstanceProfile
       NetworkInterfaces:
         - DeviceIndex: '0'
